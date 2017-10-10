@@ -2,6 +2,7 @@ from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
 from flask_oauthlib.client import OAuth
 from flask_restful import Api
+from flask_jwt import JWT
 
 app = Flask(__name__)
 app.config.from_object('config')
@@ -9,6 +10,7 @@ app.config.from_object('config')
 db = SQLAlchemy(app)
 oauth = OAuth(app)
 api = Api(app)
+jwt = JWT(app)
 
 google = oauth.remote_app(
     'google',
@@ -38,4 +40,4 @@ facebook = oauth.remote_app(
     authorize_url='https://www.facebook.com/dialog/oauth'
 )
 
-from app import models, authentication
+from app import models, authentication, views

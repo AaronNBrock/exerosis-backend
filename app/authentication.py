@@ -1,74 +1,102 @@
 # Flask
-from flask import request, jsonify, make_response
+from flask import request, jsonify, make_response, _request_ctx_stack
 # App
 from app import app, db, google, facebook, api
 # SQLAlchemy
-from sqlalchemy.exc import IntegrityError
 from app.models import User, SocialLogin, Post
 
-# RESTful
-from flask_restful import Resource
-
 # JWT
-import jwt
-import datetime
+import jwt as pyjwt
+from app import jwt
+
+from flask_jwt import JWTError, _force_iterable
+
+from datetime import datetime, timedelta
 import uuid
 import json
 
-from functools import wraps
+
+@jwt.payload_handler
+def payload_handler(identity):
+    iat = datetime.utcnow()
+    exp = iat + app.config.get('JWT_EXPIRATION_DELTA')
+    nbf = iat + app.config.get('JWT_NOT_BEFORE_DELTA')
+
+    return {'exp': exp,
+            'iat': iat,
+            'nbf': nbf,
+            'user_id': identity.id,
+            'role': identity.role}
 
 
-def token_required(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        token = None
-
-        if 'x-access-token' in request.headers:
-            token = request.headers['x-access-token']
-
-        if not token:
-            return jsonify({'message': 'Token required'})
-
-        try:
-            data = jwt.decode(token, app.config['SECRET_KEY'])
-            current_user = User.query.filter_by(id=data['user_id']).first()
-        except:
-            return jsonify({'message': 'Token is invalid'}), 401
-
-        return f(current_user, *args, **kwargs)
-    return decorated
+@jwt.identity_handler
+def identity_handler(payload):
+    user_id = payload['user_id']
+    return User.query.filter_by(id=user_id).first()
 
 
-@app.route('/user', methods=['GET'])
-@token_required
-def get_users(current_user):
-    if not current_user.id == 1:
-        return jsonify({'message': 'Permission denied'})
+@jwt.jwt_required_handler
+def jwt_required_handler(*args, **kwargs):
+    """Does the actual work of verifying the JWT data in the current request.
+    This is done automatically for you by `jwt_required()` but you could call it manually.
+    Doing so would be useful in the context of optional JWT access in your APIs.
 
-    users = User.query.all()
+    :param realm: an optional realm
+    """
+    if 0 < len(args):
+        realm = args[0]
+    elif 'realm' in kwargs:
+        realm = kwargs['realm']
+    else:
+        realm = app.config['JWT_DEFAULT_REALM']
 
-    output = []
+    if 1 < len(args):
+        roles = args[1]
+    elif 'roles' in kwargs:
+        roles = kwargs['roles']
+    else:
+        roles = None
 
-    for user in users:
-        output.append(user.as_dict())
+    if 2 < len(args):
+        soft = args[1]
+    elif 'soft' in kwargs:
+        soft = kwargs['soft']
+    else:
+        soft = False
 
-    return jsonify({'users': output})
+    token = jwt.request_callback()
+
+    if token is None:
+        if soft:
+            jwt.current_identity = None
+            _request_ctx_stack.top.current_identity = identity = None
+            return
+        else:
+            raise JWTError('Authorization Required', 'Request does not contain an access token',
+                           headers={'WWW-Authenticate': 'JWT realm="{}"'.format(realm)})
+
+    try:
+        payload = jwt.jwt_decode_callback(token)
+    except pyjwt.InvalidTokenError as e:
+        raise JWTError('Invalid token', str(e))
+
+    if roles and 'role' in payload:
+        role = payload['role']
+
+        identity_role = _force_iterable(role)
+        roles = _force_iterable(roles)
+
+        if not identity_role or not set(roles).intersection(identity_role):
+            raise JWTError('Bad Request', 'Permission Denied')
+    jwt.current_identity = jwt.identity_callback(payload)
+    _request_ctx_stack.top.current_identity = identity = jwt.current_identity
+
+    if identity is None:
+        raise JWTError('Invalid JWT', 'User does not exist')
 
 
-@app.route('/user/<user_id>', methods=['GET'])
-def get_user(user_id):
-
-    user = User.query.filter_by(id=user_id).first()
-    if not user:
-        return jsonify({'message': 'User not found'})
-    return jsonify({'user': user.as_dict()})
-
-
-@app.route('/login', methods=['POST'])
-def login():
-    data = request.get_json()
-    access_token = data['access_token']
-    provider_name = data['provider_name'].lower()
+@jwt.authentication_handler
+def authenticate(provider_name, access_token, **kwargs):
 
     if provider_name == 'google':
         me = google.get('userinfo', token=(access_token, ''))
@@ -126,8 +154,4 @@ def login():
         db.session.commit()
 
     user = social_login.user
-
-    token = jwt.encode({'user_id': user.id, 'exp': datetime.datetime.utcnow() + datetime.timedelta(weeks=4)},
-                       app.config['SECRET_KEY'])
-
-    return jsonify({'token': token.decode('UTF-8'), 'is_new_user': is_new_user})
+    return user
