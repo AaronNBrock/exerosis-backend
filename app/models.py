@@ -8,18 +8,14 @@ class User(db.Model):
     __tablename__ = 'users'
 
     id = db.Column(db.Integer, primary_key=True)
-
     public_id = db.Column(db.String(50), index=True, unique=True)
 
     name = db.Column(db.String(64), index=True)
-    name.read = ['admin', 'moderator', '']
-    name.write = []
 
     email = db.Column(db.String(128), index=True, unique=True, nullable=False)
     role = db.Column(db.Enum('admin', 'moderator', 'user', 'banned'), default='user')
     picture_url = db.Column(db.String)
     created = db.Column(db.DateTime, default=datetime.datetime.utcnow())
-
 
     social_logins = db.relationship('SocialLogin', backref='user', cascade='all, delete-orphan')
     posts = db.relationship('Post', backref='author', cascade='save-update, merge')
